@@ -18,7 +18,10 @@ import
     Base.*, Base.^, Base.+, Base.-, Base.~,
     Base.==, Base.<=, Base.>=, Base.<, Base.>,
     Base.cmp, Base.copy, Base.exp, Base.isless, Base.reverse, Base.show,
-    Base.string
+    Base.string, Base.sort!
+
+import
+    LinearAlgebra: issymmetric, eigen, istriu
 
 export
     # Types
@@ -67,45 +70,45 @@ const MODIFIED_HESTENES_INNER_PRODUCT = 3
 # Types
 #--------------------------------------------------------------
 
-type BasisBlade
+mutable struct BasisBlade
     bitmap::Int64
     scale::Float64
 
-    BasisBlade{T<:Number}(b::Int, s::T) = new(b, float64(s))
+    BasisBlade(b::Int, s::T) where T<:Number = new(b, Float64(s))
     BasisBlade(b::Int) = new(b, 1.0)
     BasisBlade(s::Float64) = new(0, s)
     BasisBlade() = new(0, 0.0)
 end
 
-type Multivector
+struct Multivector
     blades::Vector{BasisBlade}
     sorted::Bool
 
     Multivector() = new(BasisBlade[], false)
-    Multivector{T<:Number}(s::T) = new([BasisBlade(float64(s))], false)
+    Multivector(s::T) where T<:Number = new([BasisBlade(Float64(s))], false)
     Multivector(B::Vector{BasisBlade}) = new(B, false)
     Multivector(b::BasisBlade) = new([b], false)
 end
 
-type Metric
+struct Metric
     matrix::Matrix{Float64}
-    eigen::(Vector{Float64}, Matrix{Float64})
+    eig::Matrix{Float64}
     inveig::Matrix{Float64}
     metric::Vector{Float64}
     isdiag::Bool
     iseuclidean::Bool
     isantieuclidean::Bool
 
-
     function Metric(m::Matrix{Float64})
         matrix = copy(m)
-        if !issym(matrix)
+        if !issymmetric(matrix)
             error("the metric matrix must be symmetric")
         end
 
-        eigen = eig(matrix)
-        inveig = transpose(eigen[2])
-        metric = eigen[1]
+        eigenf = eigen(matrix)
+        eig = eigenf.vectors
+        inveig = transpose(eigenf.vectors)
+        metric = eigenf.values
         isdiago = isdiag(matrix)
         if !isdiago
             iseuclidean = isantieuclidean = false
@@ -120,11 +123,11 @@ type Metric
                 end
             end
         end
-        new(matrix, eigen, inveig, metric, isdiago, iseuclidean, isantieuclidean)
+        new(matrix, eig, inveig, metric, isdiago, iseuclidean, isantieuclidean)
     end
 
-    function Metric{T<:Number}(m::Matrix{T})
-        matrix = float64(m)
+    function Metric(m::Matrix{T}) where T<:Number
+        matrix = Float64(m)
         Metric(matrix)
     end
 end
@@ -137,7 +140,7 @@ function basisvector(idx::Int)
 end
 
 function randomvector(dim::Int, scale::Float64)
-    result = Array(BasisBlade, dim)
+    result = Array{BasisBlade}(undef, dim)
     for i = 1:dim
         result[i] = BasisBlade(1 << (i-1), 2 * scale * (rand() - 0.5))
     end
@@ -182,8 +185,8 @@ end
 grade(a::BasisBlade) = bitcount(a.bitmap)
 reverse(a::BasisBlade) = BasisBlade(a.bitmap, minusonepow(div(grade(a) * (grade(a) - 1), 2)) * a.scale);
 (~)(a::BasisBlade) = reverse(a)
-gradeinversion(a::BasisBlade) = BasisBlade(bitmap, minusonepow(grade(a)) * a.scale)
-cliffordconjugate(a::BasisBlade) = BasisBlade(bitmap, minusonepow(div(grade(a) * (grade(a) + 1), 2)) * a.scale);
+gradeinversion(a::BasisBlade) = BasisBlade(a.bitmap, minusonepow(grade(a)) * a.scale)
+cliffordconjugate(a::BasisBlade) = BasisBlade(a.bitmap, minusonepow(div(grade(a) * (grade(a) + 1), 2)) * a.scale);
 
 (*)(a::BasisBlade, b::BasisBlade) = gp_op(a, b, false)
 (^)(a::BasisBlade, b::BasisBlade) = gp_op(a, b, true)
@@ -265,7 +268,7 @@ function norm_e2(A::Multivector)
 end
 
 function reverse(A::Multivector)
-    result = Array(BasisBlade, size(A.blades, 1))
+    result = Array{BasisBlade}(undef, size(A.blades, 1))
     for i = 1:size(A.blades, 1)
         result[i] = reverse(A.blades[i])
     end
@@ -274,7 +277,7 @@ end
 (~)(A::Multivector) = reverse(A)
 
 function gradeinversion(A::Multivector)
-    result = Array(BasisBlade, size(A.blades, 1))
+    result = Array{BasisBlade}(undef, size(A.blades, 1))
     for i = 1:size(A.blades, 1)
         result[i] = gradeinversion(A.blades[i])
     end
@@ -282,7 +285,7 @@ function gradeinversion(A::Multivector)
 end
 
 function cliffordconjugate(A::Multivector)
-    result = Array(BasisBlade, size(A.blades, 1))
+    result = Array{BasisBlade}(undef, size(A.blades, 1))
     for i = 1:size(A.blades, 1)
         result[i] = cliffordconjugate(A.blades[i])
     end
@@ -297,7 +300,7 @@ function extractgrade(A::Multivector, G::Vector{Int})
         end
     end
 
-    keep = Array(Bool, maxg + 1)
+    keep = Array{Bool}(undef, maxg + 1)
     for i = 1:size(G, 1)
         keep[G[i]+1] = true
     end
@@ -309,7 +312,7 @@ function extractgrade(A::Multivector, G::Vector{Int})
         if g > maxg
             continue
         elseif keep[g+1]
-            push(result, copy(b))
+            push!(result, copy(b))
         end
     end
     return Multivector(result)
@@ -354,18 +357,18 @@ function scalarproduct(A::Multivector, B::Multivector, M::Metric)
     scalarpart(innerproduct(A, B, M, LEFT_CONTRACTION))
 end
 
-function scalarproduct(A::Multivector, B::Float64, M::Metric)
-    scalarpart(innerproduct(A, B, M, LEFT_CONTRACTION))
+function scalarproduct(A::Multivector, b::Float64, M::Metric)
+    scalarpart(innerproduct(A, Multivector(b), M, LEFT_CONTRACTION))
 end
 
 function (+)(A::Multivector, b::Float64)
     result = copy(A.blades)
-    push(result, BasisBlade(b))
+    push!(result, BasisBlade(b))
     return Multivector(simplify(copy(result)))
 end
 (+)(b::Float64, A::Multivector) = A + b
-(+)(b::Int, A::Multivector) = A + float64(b)
-(+)(A::Multivector, b::Int) = A + float64(b)
+(+)(b::Int, A::Multivector) = A + Float64(b)
+(+)(A::Multivector, b::Int) = A + Float64(b)
 
 function (+)(A::Multivector, B::Multivector)
     result = vcat(A.blades, B.blades)
@@ -374,8 +377,8 @@ end
 
 (-)(A::Multivector, b::Float64) = A + (-b)
 (-)(b::Float64, A::Multivector) = b + (-1.0 * A)
-(-)(A::Multivector, b::Float64) = A + (-float64(b))
-(-)(b::Float64, A::Multivector) = float64(b) + (-1.0 * A)
+(-)(A::Multivector, b::Int) = A + (-Float64(b))
+(-)(b::Int, A::Multivector) = Float64(b) + (-1.0 * A)
 
 function (-)(A::Multivector, B::Multivector)
     result = vcat(A.blades, (-1.0 * B).blades)
@@ -387,7 +390,7 @@ function geometricproduct(a::BasisBlade, b::BasisBlade, M::Metric)
     B = toeigenbasis(M, b)
     result = BasisBlade[]
     for i = 1:size(A,1), j = 1:size(B,1)
-        push(result, geometricproduct(A[i], B[j], M.metric))
+        push!(result, geometricproduct(A[i], B[j], M.metric))
     end
     return tometricbasis(M, simplifybasis(result))
 end
@@ -401,14 +404,18 @@ function innerproduct(a::BasisBlade, b::BasisBlade, m::Vector{Float64}, typ::Int
 end
 
 function innerproduct(a::BasisBlade, b::BasisBlade, m::Metric, typ::Int)
-    innerproductfilter(grade(a), grade(b), geometricproduct(a, b, M), typ)
+    r = innerproductfilter(grade(a), grade(b), geometricproduct(a, b, m), typ)
+    if length(r) == 0
+        return BasisBlade()
+    end
+    return r[1]
 end
 
 function (*)(A::Multivector, a::Float64)
     if a == 0.0
         return Multivector()
     end
-    result = Array(BasisBlade, size(A.blades)[1])
+    result = Array{BasisBlade}(undef, size(A.blades)[1])
     for i = 1:size(A.blades)[1]
         b = A.blades[i]
         result[i] = BasisBlade(b.bitmap, b.scale * a)
@@ -417,11 +424,11 @@ function (*)(A::Multivector, a::Float64)
 end
 
 (*)(a::Float64, A::Multivector) = A * a
-(*)(a::Int, A::Multivector) = A * float64(a)
-(*)(A::Multivector, a::Int) = A * float64(a)
+(*)(a::Int, A::Multivector) = A * Float64(a)
+(*)(A::Multivector, a::Int) = A * Float64(a)
 
 function (*)(A::Multivector, B::Multivector)
-    result = Array(BasisBlade, size(A.blades)[1] * size(B.blades)[1])
+    result = Array{BasisBlade}(undef, size(A.blades)[1] * size(B.blades)[1])
     k = 1
     for i = 1:size(A.blades)[1]
         B1 = A.blades[i]
@@ -436,8 +443,8 @@ end
 
 geometricproduct(A::Multivector, a::Float64) = A * a
 geometricproduct(a::Float64, A::Multivector) = A * a
-geometricproduct(A::Multivector, a::Int) = A * float64(a)
-geometricproduct(a::Int, A::Multivector) = A * float64(a)
+geometricproduct(A::Multivector, a::Int) = A * Float64(a)
+geometricproduct(a::Int, A::Multivector) = A * Float64(a)
 geometricproduct(A::Multivector, B::Multivector) = A * B
 
 function geometricproduct(A::Multivector, B::Multivector, M::Metric)
@@ -453,7 +460,7 @@ function geometricproduct(A::Multivector, B::Multivector, M::Metric)
 end
 
 function geometricproduct(A::Multivector, B::Multivector, M::Vector{Float64})
-    result = Array(BasisBlade, size(A.blades,1) * size(B.blades,1))
+    result = Array{BasisBlade}(undef, size(A.blades,1) * size(B.blades,1))
     k = 1
     for i = 1:size(A.blades)[1]
         B1 = A.blades[i]
@@ -469,7 +476,7 @@ end
 outerproduct(A::Multivector, B::Multivector) = A ^ B
 
 function (^)(A::Multivector, B::Multivector)
-    result = Array(BasisBlade, size(A.blades)[1] * size(B.blades)[1])
+    result = Array{BasisBlade}(undef, size(A.blades)[1] * size(B.blades)[1])
     k = 1
     for i = 1:size(A.blades)[1]
         B1 = A.blades[i]
@@ -483,7 +490,7 @@ function (^)(A::Multivector, B::Multivector)
 end
 
 function innerproduct(A::Multivector, B::Multivector, typ::Int)
-    result = Array(BasisBlade, size(A.blades)[1] * size(B.blades)[1])
+    result = Array{BasisBlade}(undef, size(A.blades)[1] * size(B.blades)[1])
     k = 1
     for i = 1:size(A.blades)[1]
         B1 = A.blades[i]
@@ -497,13 +504,13 @@ function innerproduct(A::Multivector, B::Multivector, typ::Int)
 end
 
 function innerproduct(A::Multivector, B::Multivector, M::Metric, typ::Int)
-    result = Array(BasisBlade, size(A.blades)[1] * size(B.blades)[1])
+    result = Array{BasisBlade}(undef, size(A.blades)[1] * size(B.blades)[1])
     k = 1
     for i = 1:size(A.blades)[1]
         B1 = A.blades[i]
         for j = 1:size(B.blades)[1]
             B2 = B.blades[j]
-            result[k] = innerproduct(B1, B2, M, typ)
+             result[k] = innerproduct(B1, B2, M, typ)
             k += 1
         end
     end
@@ -511,7 +518,7 @@ function innerproduct(A::Multivector, B::Multivector, M::Metric, typ::Int)
 end
 
 function innerproduct(A::Multivector, B::Multivector, M::Vector{Float64}, typ::Int)
-    result = Array(BasisBlade, size(A.blades)[1] * size(B.blades)[1])
+    result = Array{BasisBlade}(undef, size(A.blades)[1] * size(B.blades)[1])
     k = 1
     for i = 1:size(A.blades)[1]
         B1 = A.blades[i]
@@ -671,11 +678,11 @@ function expseries(A::Multivector, M::Vector{Float64}, order::Int)
 end
 
 function innerproductfilter(ga::Int, gb::Int, R::Vector{BasisBlade}, typ::Int)
-    result = []
+    result = BasisBlade[]
     for i = 1:size(R)[1]
         B = innerproductfilter(ga, gb, R[i], typ)
         if B.scale != 0.0
-            push(result, B)
+            push!(result, B)
         end
     end
     return result
@@ -722,7 +729,7 @@ end
 
 function transform(a::BasisBlade, M::Matrix{Float64})
     A = BasisBlade[]
-    push(A, BasisBlade(a.scale))
+    push!(A, BasisBlade(a.scale))
 
     i = 1
     b = a.bitmap
@@ -733,7 +740,7 @@ function transform(a::BasisBlade, M::Matrix{Float64})
                 if M[j,i] != 0
                     m = M[j,i]
                     for k = 1:size(A, 1)
-                        push(tmp, A[k] ^ BasisBlade(1<<(j-1), m))
+                        push!(tmp, A[k] ^ BasisBlade(1<<(j-1), m))
                     end
                 end
             end
@@ -750,7 +757,7 @@ function toeigenbasis(M::Metric, a::BasisBlade)
 end
 
 function tometricbasis(M::Metric, a::BasisBlade)
-    transform(a, M.eigen[2])
+    transform(a, M.eig)
 end
 
 function tometricbasis(M::Metric, a::Vector{BasisBlade})
@@ -767,7 +774,7 @@ function simplifybasis(A::Vector{BasisBlade})
         return A
     end
 
-    sort!((x,y)->basiscmp(x,y) <= 0, A)
+    sort!(A, lt=(x,y)->basiscmp(x,y) <= 0)
     result = BasisBlade[]
     current = copy(A[1])
     for i = 2:size(A,1)
@@ -776,13 +783,13 @@ function simplifybasis(A::Vector{BasisBlade})
             current.scale += b.scale
         else
             if current.scale != 0.0
-                push(result, current)
+                push!(result, current)
             end
             current = copy(b)
         end
     end
     if current.scale != 0.0
-        push(result, current)
+        push!(result, current)
     end
     return result
 end
@@ -811,7 +818,7 @@ function gp_op(a::BasisBlade, b::BasisBlade, outer::Bool)
         return BasisBlade()
     end
 
-    bitmap = a.bitmap $ b.bitmap
+    bitmap = xor(a.bitmap, b.bitmap)
     sig = canonical_reordering_sign(a.bitmap, b.bitmap)
 
     return BasisBlade(bitmap, sig * a.scale * b.scale)
@@ -902,11 +909,11 @@ function simplify(L::Vector{BasisBlade})
     while i <= size(L, 1)
         curblade = L[i]
         if curblade.scale == 0.0
-            del(L, i)
+            deleteat!(L, i)
             prev = 0
         elseif (prev != 0) && (prev.bitmap == curblade.bitmap)
             prev.scale += curblade.scale
-            del(L, i)
+            deleteat!(L, i)
         else
             if (prev != 0) && (prev.scale == 0.0)
                 removenull = true
@@ -921,7 +928,7 @@ function simplify(L::Vector{BasisBlade})
         while i <= size(L, 1)
             curblade = L[i]
             if curblade.scale == 0.0
-                del(L, i)
+                deleteat!(L, i)
             else
                 i += 1
             end
@@ -951,7 +958,7 @@ function compress(A::Multivector, epsilon::Float64)
         while i <= size(A.blades, 1)
             b = A.blades[i]
             if abs(b.scale) < maxmag
-                del(A.blades, i)
+                deleteat!(A.blades, i)
             else
                 i += 1
             end
